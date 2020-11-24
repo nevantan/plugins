@@ -1,4 +1,4 @@
-import { extname } from 'path';
+import { dirname, extname } from 'path';
 
 import { createFilter } from '@rollup/pluginutils';
 import getCommonDir from 'commondir';
@@ -20,6 +20,7 @@ import {
   getHelpersModule,
   HELPERS_ID,
   isWrappedId,
+  MODULE_SUFFIX,
   PROXY_SUFFIX,
   unwrapId
 } from './helpers';
@@ -35,7 +36,7 @@ import {
 import getResolveId from './resolve-id';
 import validateRollupVersion from './rollup-version';
 import transformCommonjs from './transform-commonjs';
-import { normalizePathSlashes } from './utils';
+import { getName, getVirtualPathForDynamicRequirePath, normalizePathSlashes } from './utils';
 
 export default function commonjs(options = {}) {
   const extensions = options.extensions || ['.js'];
@@ -81,6 +82,7 @@ export default function commonjs(options = {}) {
 
   function transformAndCheckExports(code, id) {
     if (isDynamicRequireModulesEnabled && this.getModuleInfo(id).isEntry) {
+      // eslint-disable-next-line no-param-reassign
       code =
         getDynamicPackagesEntryIntro(dynamicRequireModuleDirPaths, dynamicRequireModuleSet) + code;
     }
@@ -104,7 +106,7 @@ export default function commonjs(options = {}) {
       return { meta: { commonjs: { isCommonJS: false } } };
     }
 
-    // avoid wrapping in createCommonjsModule, as this is a commonjsRegister call
+    // avoid wrapping as this is a commonjsRegister call
     const disableWrap = isModuleRegistrationProxy(id, dynamicRequireModuleSet);
 
     return transformCommonjs(
@@ -137,6 +139,16 @@ export default function commonjs(options = {}) {
 
     resolveId,
 
+    // TODO Lukas in Rollup, ensure synthetic namespace is only rendered when needed
+    // TODO Lukas
+    //  - Only wrap if
+    //    - there is an assignment to module.exports (also check destructuring) or
+    //    - unchecked usages of module or
+    //    - direct eassignment to exports (also check destructuring)
+    //  - Use foo?exports instead of foo?module if there are no assignments to module.exports
+    //    (also check destructring)
+    //  - Do not use foo?module and do not wrap if there are only direct top-level module.exports
+    //    assignments and no exports property assignments
     load(id) {
       if (id === HELPERS_ID) {
         return getHelpersModule(isDynamicRequireModulesEnabled);
@@ -144,6 +156,30 @@ export default function commonjs(options = {}) {
 
       if (id.startsWith(HELPERS_ID)) {
         return getSpecificHelperProxy(id);
+      }
+
+      if (isWrappedId(id, MODULE_SUFFIX)) {
+        const actualId = unwrapId(id, MODULE_SUFFIX);
+        let name = getName(actualId);
+        let code;
+        if (isDynamicRequireModulesEnabled) {
+          if (['modulePath', 'commonjsRequire', 'createModule'].includes(name)) {
+            name = `${name}_`;
+          }
+          code =
+            `import {commonjsRequire, createModule} from "${HELPERS_ID}";\n` +
+            `var ${name} = createModule(${JSON.stringify(
+              getVirtualPathForDynamicRequirePath(dirname(actualId), commonDir)
+            )});\n` +
+            `export {${name} as __module}`;
+        } else {
+          code = `var ${name} = {exports: {}}; export {${name} as __module}`;
+        }
+        return {
+          code,
+          syntheticNamedExports: '__module',
+          meta: { commonjs: { isCommonJS: false } }
+        };
       }
 
       if (isWrappedId(id, EXTERNAL_SUFFIX)) {
@@ -197,9 +233,9 @@ export default function commonjs(options = {}) {
       }
     },
 
-    moduleParsed({ id, meta: { commonjs } }) {
-      if (commonjs) {
-        const isCjs = commonjs.isCommonJS;
+    moduleParsed({ id, meta: { commonjs: commonjsMeta } }) {
+      if (commonjsMeta) {
+        const isCjs = commonjsMeta.isCommonJS;
         if (isCjs != null) {
           setIsCjsPromise(id, isCjs);
           return;

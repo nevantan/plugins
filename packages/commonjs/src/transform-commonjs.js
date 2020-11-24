@@ -62,7 +62,6 @@ export default function transformCommonjs(
   let lexicalDepth = 0;
   let programDepth = 0;
   let shouldWrap = false;
-  const defineCompiledEsmExpressions = [];
 
   const globals = new Set();
 
@@ -86,6 +85,7 @@ export default function transformCommonjs(
   const skippedNodes = new Set();
   const topLevelModuleExportsAssignments = [];
   const topLevelExportsAssignmentsByName = new Map();
+  const defineCompiledEsmExpressions = [];
 
   walk(ast, {
     enter(node, parent) {
@@ -119,7 +119,7 @@ export default function transformCommonjs(
             if (programDepth > 3) {
               shouldWrap = true;
             } else if (exportName === KEY_COMPILED_ESM) {
-              defineCompiledEsmExpressions.push(parent);
+              defineCompiledEsmExpressions.push(node);
             } else if (flattened.keypath === 'module.exports') {
               topLevelModuleExportsAssignments.push(node);
             } else if (!topLevelExportsAssignmentsByName.has(exportName)) {
@@ -151,7 +151,7 @@ export default function transformCommonjs(
             if (programDepth === 3 && parent.type === 'ExpressionStatement') {
               // skip special handling for [module.]exports until we know we render this
               skippedNodes.add(node.arguments[0]);
-              defineCompiledEsmExpressions.push(parent);
+              defineCompiledEsmExpressions.push(node);
             } else {
               shouldWrap = true;
             }
@@ -321,17 +321,21 @@ export default function transformCommonjs(
     }
   });
 
+  // TODO Lukas we do not need this for ES modules
+  const moduleName = deconflict(scope, globals, getName(id));
+
+  // TODO Lukas inline this into exports block
   let isRestorableCompiledEsm = false;
-  if (defineCompiledEsmExpressions.length > 0) {
-    if (!shouldWrap && defineCompiledEsmExpressions.length === 1) {
+  if (!shouldWrap) {
+    for (const expression of defineCompiledEsmExpressions) {
       isRestorableCompiledEsm = true;
-      magicString.remove(
-        defineCompiledEsmExpressions[0].start,
-        defineCompiledEsmExpressions[0].end
+      const moduleExportsExpression =
+        expression.type === 'CallExpression' ? expression.arguments[0] : expression.left.object;
+      magicString.overwrite(
+        moduleExportsExpression.start,
+        moduleExportsExpression.end,
+        `${moduleName}.exports`
       );
-    } else {
-      shouldWrap = true;
-      uses.exports = true;
     }
   }
 
@@ -353,8 +357,6 @@ export default function transformCommonjs(
     return { meta: { commonjs: { isCommonJS: false } } };
   }
 
-  const moduleName = deconflict(scope, globals, getName(id));
-
   let leadingComment = '';
   if (code.startsWith('/*')) {
     const commentEnd = code.indexOf('*/', 2) + 2;
@@ -375,7 +377,8 @@ export default function transformCommonjs(
         isRestorableCompiledEsm,
         code,
         uses,
-        HELPERS_NAME
+        HELPERS_NAME,
+        id
       );
 
   const importBlock = rewriteRequireExpressionsAndGetImportBlock(
@@ -384,7 +387,9 @@ export default function transformCommonjs(
     topLevelRequireDeclarators,
     reassignedNames,
     uses.commonjsHelpers && HELPERS_NAME,
-    dynamicRegisterSources
+    dynamicRegisterSources,
+    moduleName,
+    id
   );
 
   if (shouldWrap) {
@@ -395,6 +400,11 @@ export default function transformCommonjs(
     .trim()
     .prepend(leadingComment + importBlock)
     .append(exportBlock);
+
+  // TODO Lukas remove
+  // console.log('<===', id);
+  // console.log(magicString.toString());
+  // console.log();
 
   return {
     code: magicString.toString(),
