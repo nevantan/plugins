@@ -26,7 +26,7 @@ let mockChildProcess;
 test.before(() => {
   mockChildProcess = sinon
     .stub(childProcess, ['fork'])
-    .returns({ ...new EventEmitter(), kill: sinon.fake() });
+    .returns({ ...new EventEmitter(), kill: sinon.fake(), on: sinon.fake() });
 });
 
 test('builds the bundle and forks a child process', async (t) => {

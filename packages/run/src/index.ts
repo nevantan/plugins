@@ -48,8 +48,12 @@ export default function run(opts: RollupRunOptions = {}): Plugin {
       });
 
       if (entryFileName) {
-        if (proc) proc.kill();
-        proc = fork(path.join(dir, entryFileName), args, forkOptions);
+        if (proc) {
+          proc.on('exit', () => (proc = fork(path.join(dir, entryFileName), args, forkOptions)));
+          proc.kill();
+        } else {
+          proc = fork(path.join(dir, entryFileName), args, forkOptions);
+        }
       } else {
         this.error(`@rollup/plugin-run could not find output chunk`);
       }
